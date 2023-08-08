@@ -27,6 +27,7 @@
 
 #if defined(USE_ROCM)
 #include <miopen/version.h>
+#include <rocblas/rocblas.h>
 #endif
 
 #ifndef USE_ROCM
@@ -80,6 +81,11 @@ void CUDAHooks::initCUDA() const {
   const auto num_devices = c10::cuda::device_count_ensure_non_zero();
   c10::cuda::CUDACachingAllocator::init(num_devices);
   at::cuda::detail::init_p2p_access_cache(num_devices);
+
+#if defined(USE_ROCM)
+  LOG(WARNING) << "Executing rocblas_initialize to work around multi gpu arch rocm bug";
+  rocblas_initialize();
+#endif
 
 #if AT_MAGMA_ENABLED()
   TORCH_INTERNAL_ASSERT(magma_init_fn != nullptr, "Cannot initialize magma, init routine not set");
