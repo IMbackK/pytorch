@@ -90,6 +90,7 @@ SKIP_FOR_CPU = {
     "sam",  # timeout
     "llama_v2_7b_16h",  # model is CUDA only
     "stable_diffusion",  # flaky
+    "torchrec_dlrm",  # requires FBGEMM, CUDA only
 }
 
 SKIP_FOR_CUDA = {
@@ -142,6 +143,11 @@ REQUIRE_EVEN_HIGHER_TOLERANCE = {
 
 REQUIRE_HIGHER_FP16_TOLERANCE = {
     "drq",
+}
+
+
+REQUIRE_HIGHER_BF16_TOLERANCE = {
+    "detectron2_fcos_r_50_fpn",
 }
 
 REQUIRE_COSINE_TOLERACE = {
@@ -206,6 +212,7 @@ SKIP_ACCURACY_CHECK_MODELS = {
     "timm_vision_transformer_large",
     "maml",  # accuracy https://github.com/pytorch/pytorch/issues/93847
     "llama_v2_7b_16h",
+    "Background_Matting",
 }
 
 SKIP_ACCURACY_CHECK_AS_EAGER_NON_DETERMINISTIC_MODELS = {
@@ -225,6 +232,11 @@ FORCE_AMP_FOR_FP16_BF16_MODELS = {
     "doctr_reco_predictor",
     "Super_SloMo",
     "tts_angular",
+}
+
+# models in canary_models that we should run anyway
+CANARY_MODELS = {
+    "torchrec_dlrm",
 }
 
 
@@ -305,8 +317,9 @@ class TorchBenchmarkRunner(BenchmarkRunner):
             try:
                 module = importlib.import_module(c)
                 break
-            except ModuleNotFoundError:
-                pass
+            except ModuleNotFoundError as e:
+                if e.name != c:
+                    raise
         else:
             raise ImportError(f"could not import any of {candidates}")
         benchmark_cls = getattr(module, "Model", None)
@@ -392,9 +405,16 @@ class TorchBenchmarkRunner(BenchmarkRunner):
         return device, benchmark.name, model, example_inputs, batch_size
 
     def iter_model_names(self, args):
-        from torchbenchmark import _list_model_paths
+        from torchbenchmark import _list_canary_model_paths, _list_model_paths
 
         models = _list_model_paths()
+        models += [
+            f
+            for f in _list_canary_model_paths()
+            if os.path.basename(f) in CANARY_MODELS
+        ]
+        models.sort()
+
         start, end = self.get_benchmark_indices(len(models))
         for index, model_path in enumerate(models):
             if index < start or index >= end:
@@ -425,6 +445,11 @@ class TorchBenchmarkRunner(BenchmarkRunner):
             if name in REQUIRE_HIGHER_FP16_TOLERANCE:
                 return 1e-2, cosine
             return 1e-3, cosine
+
+        if self.args.bfloat16:
+            if name in REQUIRE_HIGHER_BF16_TOLERANCE:
+                return 1e-2, cosine
+
         if is_training and current_device == "cuda":
             tolerance = 1e-3
             if name in REQUIRE_COSINE_TOLERACE:

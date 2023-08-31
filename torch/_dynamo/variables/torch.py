@@ -6,6 +6,11 @@ import re
 import types
 from typing import Dict, List
 
+try:
+    import numpy as np
+except ModuleNotFoundError:
+    np = None
+
 import torch._C
 import torch.fx
 import torch.nn
@@ -19,9 +24,7 @@ from ..source import GeneratorStateSource
 from ..utils import (
     check_constant_args,
     check_unspec_python_args,
-    HAS_NUMPY,
     istype,
-    np,
     product,
     proxy_args_kwargs,
     specialize_args_kwargs,
@@ -223,7 +226,12 @@ class TorchVariable(VariableTracker):
         unspec_python_args = check_unspec_python_args(args, kwargs)
         options = VariableTracker.propagate(self, args, kwargs.values())
 
-        if self.value in config.constant_functions:
+        if self.value is torch._functorch.vmap.vmap_impl:
+            return TorchHigherOrderOperatorVariable.make(
+                self.value,
+                source=self.source,
+            ).call_function(tx, args, kwargs)
+        elif self.value in config.constant_functions:
             assert not args and not kwargs
             return ConstantVariable(config.constant_functions[self.value], **options)
         elif self.value is torch._functorch.eager_transforms.grad_impl:
@@ -348,11 +356,10 @@ class TorchVariable(VariableTracker):
                 **options,
             )
         elif self.value is torch.from_numpy:
-            if not config.numpy_ndarray_as_tensor:
-                unimplemented(
-                    "torch.from_numpy(). Turn on config.numpy_ndarray_as_tensor to support "
-                    "torch.from_numpy()."
-                )
+            if not config.trace_numpy:
+                unimplemented("torch.from_numpy. config.trace_numpy is False")
+            if not np:
+                unimplemented("torch.from_numpy. NumPy is not available")
             assert len(args) == 1, f"Got arguments {args}"
             assert not kwargs
             t = args[0]
@@ -445,6 +452,9 @@ class TorchVariable(VariableTracker):
         elif self.value is torch.nn.Parameter:
             # https://github.com/pytorch/pytorch/issues/99569
             unimplemented("torch.nn.Parameter not supported")
+        elif self.value is torch.manual_seed:
+            # https://github.com/pytorch/pytorch/issues/107187
+            unimplemented("torch.manual_seed not supported")
         if (
             self.value.__name__ == "get_state"
             and hasattr(self.value, "__self__")
@@ -648,6 +658,10 @@ class TorchVariable(VariableTracker):
                     return v
 
             return torch.utils._pytree.tree_map(map_fn, tree)
+        elif self.value is torch.nn.utils.rnn.pack_padded_sequence:
+            unimplemented("workaround https://github.com/pytorch/pytorch/issues/93501")
+        elif isinstance(self.value, types.ModuleType):
+            unimplemented("TypeError(\"'module' object is not callable\")")
         else:
             any_symints_or_symfloats = any(isinstance(x, SymNodeVariable) for x in args)
             all_ints_or_floats = all(
@@ -671,7 +685,7 @@ For now, dynamo will explicitly graph break when it encounters user code with th
             # Handle sth like torch.LongTensor(list(np.int64, np.int64, ...)),
             # as FX symbolic trace doesn't support numpy int/float as base types.
             if (
-                HAS_NUMPY
+                np
                 and self.value in tensortype_to_dtype
                 and len(args) == 1
                 and isinstance(args[0], ListVariable)
@@ -742,6 +756,13 @@ For now, dynamo will explicitly graph break when it encounters user code with th
                             tx.symbolic_locals[name] = tensor_variable.items[idx]
                 elif isinstance(tensor_variable, TensorVariable):
                     assert isinstance(kwargs["out"], TensorVariable)
+                    if (
+                        kwargs["out"] in tx.output.graphargs
+                        and kwargs["out"].size != tensor_variable.size
+                    ):
+                        # It's hard to get out variants with resizing on graph inputs work
+                        # properly across dynamo/aot/inductor, just fall back.
+                        unimplemented("out variants with resizing on graph inputs")
                     name = tx.find_symbolic_locals_name(kwargs["out"])
                     if name in tx.symbolic_locals:
                         tx.symbolic_locals[name] = tensor_variable

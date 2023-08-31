@@ -31,7 +31,14 @@ minimum_call_count = 1
 dead_code_elimination = True
 
 # disable (for a function) when cache reaches this size
+
+# controls the maximum number of cache entries with a guard on same ID_MATCH'd
+# object. It also controls the maximum size of cache entries if they don't have
+# any ID_MATCH'd guards.
+# TODO(janimesh) - Reduce this value to a smaller number once stability is reached.
 cache_size_limit = 64
+# controls the maximum number of entries for a code object.
+accumulated_cache_size_limit = 64
 
 # whether or not to specialize on int inputs.  This only has an effect with
 # dynamic_shapes; when dynamic_shapes is False, we ALWAYS specialize on int
@@ -242,9 +249,6 @@ report_guard_failures = os.environ.get("TORCHDYNAMO_REPORT_GUARD_FAILURES") == "
 # root folder of the project
 base_dir = dirname(dirname(dirname(abspath(__file__))))
 
-# trace through numpy ndarray as tensor and try to translate numpy function to torch function.
-numpy_ndarray_as_tensor = False
-
 # Uses z3 for validating the guard optimizations transformations.
 translation_validation = (
     os.environ.get("TORCHDYNAMO_TRANSLATION_VALIDATION", "0") == "1"
@@ -253,6 +257,15 @@ translation_validation = (
 translation_validation_timeout = int(
     os.environ.get("TORCHDYNAMO_TRANSLATION_VALIDATION_TIMEOUT", "600000")
 )
+
+# Trace through NumPy or graphbreak
+trace_numpy = True
+
+# Default NumPy dtypes when tracing with torch.compile
+# We default to 64bits. For efficiency, one may want to change these to float32
+numpy_default_float = "float64"
+numpy_default_complex = "complex128"
+numpy_default_int = "int64"
 
 
 def is_fbcode():
@@ -286,6 +299,11 @@ capture_func_transforms = True
 # simulates what would happen if we didn't have support for BUILD_SET opcode,
 # used for testing
 inject_BUILD_SET_unimplemented_TESTING_ONLY = False
+
+# wraps (un)equalities with 'Not' class after recording the correct expression
+# in the FX graph. This should incorrectly construct the divisible and replacement
+# lists, and incorrectly issue guards.
+inject_EVALUATE_EXPR_flip_equality_TESTING_ONLY = False
 
 _autograd_backward_strict_mode_banned_ops = [
     "stride",
